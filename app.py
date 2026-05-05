@@ -4,7 +4,6 @@ import csv
 from io import StringIO
 
 st.set_page_config(page_title="Order Price Updater", layout="wide")
-
 st.title("Order Price Updater")
 
 uploaded_file = st.file_uploader("Upload TXT/CSV file", type=["txt", "csv"])
@@ -13,7 +12,7 @@ if uploaded_file:
     raw_bytes = uploaded_file.read()
 
     try:
-        content = raw_bytes.decode("utf-8")
+        content = raw_bytes.decode("utf-8-sig")
     except UnicodeDecodeError:
         content = raw_bytes.decode("cp1256", errors="replace")
 
@@ -23,20 +22,34 @@ if uploaded_file:
         st.error("File does not contain enough rows.")
         st.stop()
 
-    # First line is the title/header line
     title_line = lines[0]
     data_lines = lines[1:]
 
-    # Read CSV rows safely
-    reader = csv.reader(data_lines)
-    rows = list(reader)
+    rows = []
+    skipped_rows = []
 
-    df = pd.DataFrame(rows)
+    for line_no, line in enumerate(data_lines, start=2):
+        if not line.strip():
+            continue
 
-    # Column indexes
-    PRICE_COL = 8    # Column I
-    STOCK_COL = 2    # Column C
-    ORDER_COL = 20   # Column U
+        try:
+            parsed = next(csv.reader([line]))
+            rows.append(parsed)
+        except Exception as e:
+            skipped_rows.append((line_no, str(e)))
+
+    if not rows:
+        st.error("No valid data rows found.")
+        st.stop()
+
+    max_cols = max(len(r) for r in rows)
+    rows = [r + [""] * (max_cols - len(r)) for r in rows]
+
+    df = pd.DataFrame(rows).fillna("").astype(str)
+
+    PRICE_COL = 8     # Column I
+    STOCK_COL = 2     # Column C
+    ORDER_COL = 20    # Column U
 
     required_cols = max(PRICE_COL, STOCK_COL, ORDER_COL) + 1
 
@@ -44,26 +57,25 @@ if uploaded_file:
         st.error(f"File has only {df.shape[1]} columns. Expected at least {required_cols}.")
         st.stop()
 
-    df = df.fillna("").astype(str)
-
     st.success(f"File loaded successfully. Rows: {len(df):,}")
+
+    if skipped_rows:
+        st.warning(f"{len(skipped_rows)} malformed rows were skipped.")
 
     invalid_values = ["", "None", "none", "NONE", "nan", "NaN", "NAN", "null", "NULL"]
 
     orders = df[[ORDER_COL, STOCK_COL, PRICE_COL]].copy()
     orders.columns = ["Order Number", "Stock Name", "Current Price"]
 
-    orders["Order Number"] = orders["Order Number"].fillna("").astype(str).str.strip()
-    orders["Stock Name"] = orders["Stock Name"].fillna("").astype(str).str.strip()
-    orders["Current Price"] = orders["Current Price"].fillna("").astype(str).str.strip()
+    orders["Order Number"] = orders["Order Number"].astype(str).str.strip()
+    orders["Stock Name"] = orders["Stock Name"].astype(str).str.strip()
+    orders["Current Price"] = orders["Current Price"].astype(str).str.strip()
 
-    # Remove invalid / empty order and stock rows
     orders = orders[
-        ~orders["Order Number"].isin(invalid_values) &
-        ~orders["Stock Name"].isin(invalid_values)
+        ~orders["Order Number"].isin(invalid_values)
+        & ~orders["Stock Name"].isin(invalid_values)
     ]
 
-    # Keep only one row per unique order
     orders = orders.drop_duplicates(subset=["Order Number"])
 
     st.subheader("Enter New Prices")
@@ -75,9 +87,6 @@ if uploaded_file:
         order_no = str(row["Order Number"]).strip()
         stock_name = str(row["Stock Name"]).strip()
         current_price = str(row["Current Price"]).strip()
-
-        if order_no in invalid_values or stock_name in invalid_values:
-            continue
 
         col1, col2, col3 = st.columns([2, 4, 2])
 
@@ -103,9 +112,6 @@ if uploaded_file:
             order_no = str(order_no).strip()
             price = str(price).strip()
 
-            if order_no in invalid_values:
-                continue
-
             if price in invalid_values:
                 errors.append(f"Order {order_no}: price is empty")
                 continue
@@ -121,7 +127,10 @@ if uploaded_file:
                     errors.append(f"Order {order_no}: price cannot exceed 4 decimals")
                     continue
 
-                updated_df.loc[updated_df[ORDER_COL].astype(str).str.strip() == order_no, PRICE_COL] = price
+                updated_df.loc[
+                    updated_df[ORDER_COL].astype(str).str.strip() == order_no,
+                    PRICE_COL
+                ] = price
 
             except ValueError:
                 errors.append(f"Order {order_no}: invalid price")
@@ -132,8 +141,6 @@ if uploaded_file:
                 st.write(f"- {err}")
         else:
             output_buffer = StringIO()
-
-            # Add title/header line back
             output_buffer.write(title_line + "\n")
 
             writer = csv.writer(output_buffer, lineterminator="\n")
