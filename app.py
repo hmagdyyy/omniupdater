@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import csv
 from io import StringIO
+from collections import Counter
 
 st.set_page_config(page_title="Order Price Updater", layout="wide")
 st.title("Order Price Updater")
@@ -47,11 +48,13 @@ if uploaded_file:
 
     df = pd.DataFrame(rows).fillna("").astype(str)
 
-    PRICE_COL = 8     # Column I
-    STOCK_COL = 2     # Column C
-    ORDER_COL = 20    # Column U
+    # Column indexes
+    PRICE_COL = 8          # Column I
+    STOCK_COL = 2          # Column C
+    ASSET_MANAGER_COL = 18 # Column S
+    ORDER_COL = 20         # Column U
 
-    required_cols = max(PRICE_COL, STOCK_COL, ORDER_COL) + 1
+    required_cols = max(PRICE_COL, STOCK_COL, ASSET_MANAGER_COL, ORDER_COL) + 1
 
     if df.shape[1] < required_cols:
         st.error(f"File has only {df.shape[1]} columns. Expected at least {required_cols}.")
@@ -64,19 +67,47 @@ if uploaded_file:
 
     invalid_values = ["", "None", "none", "NONE", "nan", "NaN", "NAN", "null", "NULL"]
 
-    orders = df[[ORDER_COL, STOCK_COL, PRICE_COL]].copy()
-    orders.columns = ["Order Number", "Stock Name", "Current Price"]
+    # Clean relevant columns
+    df[ORDER_COL] = df[ORDER_COL].astype(str).str.strip()
+    df[STOCK_COL] = df[STOCK_COL].astype(str).str.strip()
+    df[PRICE_COL] = df[PRICE_COL].astype(str).str.strip()
+    df[ASSET_MANAGER_COL] = df[ASSET_MANAGER_COL].astype(str).str.strip()
 
-    orders["Order Number"] = orders["Order Number"].astype(str).str.strip()
-    orders["Stock Name"] = orders["Stock Name"].astype(str).str.strip()
-    orders["Current Price"] = orders["Current Price"].astype(str).str.strip()
+    valid_df = df[
+        ~df[ORDER_COL].isin(invalid_values)
+        & ~df[STOCK_COL].isin(invalid_values)
+    ].copy()
 
-    orders = orders[
-        ~orders["Order Number"].isin(invalid_values)
-        & ~orders["Stock Name"].isin(invalid_values)
-    ]
+    def get_mode_value(series):
+        values = [
+            str(x).strip()
+            for x in series
+            if str(x).strip() not in invalid_values
+        ]
 
-    orders = orders.drop_duplicates(subset=["Order Number"])
+        if not values:
+            return ""
+
+        counts = Counter(values)
+        return counts.most_common(1)[0][0]
+
+    # Build one row per order
+    orders = (
+        valid_df
+        .groupby(ORDER_COL, as_index=False)
+        .agg({
+            STOCK_COL: "first",
+            PRICE_COL: "first",
+            ASSET_MANAGER_COL: get_mode_value
+        })
+    )
+
+    orders = orders.rename(columns={
+        ORDER_COL: "Order Number",
+        STOCK_COL: "Stock Name",
+        PRICE_COL: "Current Price",
+        ASSET_MANAGER_COL: "Asset Manager"
+    })
 
     st.subheader("Enter New Prices")
     st.write(f"Valid unique orders found: **{len(orders):,}**")
@@ -86,9 +117,10 @@ if uploaded_file:
     for _, row in orders.iterrows():
         order_no = str(row["Order Number"]).strip()
         stock_name = str(row["Stock Name"]).strip()
+        asset_manager = str(row["Asset Manager"]).strip()
         current_price = str(row["Current Price"]).strip()
 
-        col1, col2, col3 = st.columns([2, 4, 2])
+        col1, col2, col3, col4 = st.columns([2, 4, 4, 2])
 
         with col1:
             st.write(f"**Order:** {order_no}")
@@ -97,6 +129,9 @@ if uploaded_file:
             st.write(f"**Stock:** {stock_name}")
 
         with col3:
+            st.write(f"**Asset Manager:** {asset_manager}")
+
+        with col4:
             new_price = st.text_input(
                 "New Price",
                 value=current_price,
